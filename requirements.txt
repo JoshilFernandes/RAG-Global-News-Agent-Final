@@ -8,3 +8,6 @@ aiosqlite
 beautifulsoup4
 python-dotenv
 openai>=1.0.0
+sentence-transformers
+faiss-cpu
+numpy
