@@ -93,6 +93,11 @@ data/            # local SQLite DB + downloaded files (gitignored)
 - **No results for a query** — run `downloader.py` and `processor.py` first to populate `data/gdelt.db`. GDELT only keeps a rolling ~7 day window of recent exports, so very old date ranges won't return anything unless you've archived older files yourself.
 - **Groq rate limits** — the free tier is generous but not unlimited; if you hit a rate limit, wait a minute or switch `GROQ_MODEL` in `.env` to a smaller model (e.g. `llama-3.1-8b-instant`).
 
+## Screenshot of Streamlit UI 
+<img width="1918" height="971" alt="Screenshot 2026-07-31 222859" src="https://github.com/user-attachments/assets/3b298a7f-e263-4123-b293-5c598072defa" />
+<img width="1918" height="997" alt="image" src="https://github.com/user-attachments/assets/89554580-d528-4ade-9f78-5823d51df170" />
+
+
 ## Support
 
 For questions, contact joshilfernandes@gmail.com
