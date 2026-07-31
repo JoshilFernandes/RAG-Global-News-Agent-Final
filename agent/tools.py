@@ -5,6 +5,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 import re
 from dotenv import load_dotenv
+from vectorstore import VectorStore
 
 # Load environment variables
 load_dotenv()
@@ -196,3 +197,42 @@ async def search_events_by_date(start_date: str, end_date: str, limit: int = 20)
         raise
     finally:
         await conn.close()
+
+
+async def search_events_by_semantic(query: str, top_k: int = 5):
+    """Return top_k events semantically matching query using FAISS + S-BERT."""
+    try:
+        vs = VectorStore()
+        hits = vs.search(query, top_k)
+        if not hits:
+            return []
+        ids = [h[0] for h in hits]
+
+        # Query SQLite for the rows with these ids
+        conn = await get_connection()
+        placeholders = ",".join("?" for _ in ids)
+        q = f"""
+            SELECT {SELECT_COLUMNS}, id
+            FROM gdelt_events
+            WHERE id IN ({placeholders})
+        """
+        try:
+            async with conn.execute(q, ids) as cur:
+                rows = await cur.fetchall()
+                results = []
+                for row in rows:
+                    # row = (SQLDATE, Actor1Name, ..., EventDescription, id)
+                    ev = _row_to_dict(row[:-1])
+                    ev['id'] = row[-1]
+                    results.append(ev)
+
+            # Preserve FAISS ranking order
+            id_to_event = {ev['id']: ev for ev in results}
+            ordered = [id_to_event[i] for i in ids if i in id_to_event]
+
+            return await _enrich_with_scraped_content(ordered)
+        finally:
+            await conn.close()
+    except Exception as e:
+        print(f"Error in semantic search: {str(e)}")
+        return []
