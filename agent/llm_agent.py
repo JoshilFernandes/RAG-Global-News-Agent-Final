@@ -143,23 +143,7 @@ You are a professional news editor who reports events from the database. Your ta
 9. DO NOT make assumptions about the meaning or implications of events
 10. DO NOT generate generic or repetitive content
 11. DO NOT add any content that wasn't in the original text
-
-Example format for found events:
-"Latest News from [Country]:
-
-• [Date]
-  [First sentence with key facts and context]
-  [Second sentence with additional details ]
-  [Source URL]"
-
-Example for no events:
-If the input is "No events found in the database", respond with:
-"No events found in the database"
-
-Important: If you see any events in the input, you MUST report them, even if they are from 2025.
-DO NOT say "no events found" if events are provided to you.
-DO NOT add any information that is not explicitly stated in the events.
-DO NOT generate generic or repetitive content."""
+"""
 
 # Tool schema for OpenAI function calling
 TOOL_SCHEMAS = [
@@ -416,6 +400,7 @@ async def agent_chat(user_query: str) -> str:
         # Determine which tool to use based on the query
         tool_name = None
         tool_args = {}
+        tool_result = None
         requested_type = None
         requested_count = None
         requested_year = None
@@ -494,17 +479,33 @@ async def agent_chat(user_query: str) -> str:
                 "end_date": end_date.strftime("%Y-%m-%d")
             }
         else:
-            # Use keyword search with the event type if specified
-            keyword = requested_type if requested_type else "news"
-            print(f"Using search_by_keyword with '{keyword}'...")
-            tool_name = "search_by_keyword"
-            tool_args = {"keyword": keyword}
+            # Try semantic search for free-text queries first
+            print("Attempting semantic search for free-text query...")
+            try:
+                semantic_results = await tools.search_events_by_semantic(user_query, top_k=requested_count)
+            except Exception as e:
+                print(f"Semantic search failed: {e}")
+                semantic_results = None
+
+            if semantic_results:
+                print(f"Semantic search returned {len(semantic_results)} results.")
+                tool_result = semantic_results
+                tool_name = "semantic_search"
+            else:
+                # Use keyword search with the event type if specified
+                keyword = requested_type if requested_type else "news"
+                print(f"Using search_by_keyword with '{keyword}'...")
+                tool_name = "search_by_keyword"
+                tool_args = {"keyword": keyword}
         
         print(f"Selected tool: {tool_name}")
         print(f"Tool arguments: {tool_args}")
         
         # Execute the tool
-        if tool_name in TOOL_MAP:
+        if tool_name == "semantic_search":
+            print("Using semantic search results directly...")
+            tool_result = tool_result or []
+        elif tool_name in TOOL_MAP:
             print(f"Executing {tool_name}...")
             if tool_name == "search_by_keyword":
                 tool_result = await TOOL_MAP[tool_name](tool_args["keyword"])
@@ -515,37 +516,34 @@ async def agent_chat(user_query: str) -> str:
                     tool_args["start_date"], 
                     tool_args["end_date"]
                 )
-            
             print(f"Tool execution completed. Got {len(tool_result)} results.")
             
-            if not tool_result:
-                return "No events found in the database"
-            
-            # Format the results
-            formatted_results = format_events(
-                tool_result, 
-                requested_type,
-                requested_year
-            )
-            
-            if formatted_results == "No events found in the database":
-                return formatted_results
-            
-            # Use LLM to rephrase the news while keeping the same meaning
-            try:
-                print("\n=== Starting LLM Rephrasing Process ===")
-                rephrased_text = await process_with_llm(formatted_results)
-                print("\n=== LLM Rephrasing Completed Successfully ===")
-                print(f"Final output:\n{rephrased_text}")
-                return rephrased_text
-                
-            except Exception as e:
-                print(f"\n=== Error in LLM Rephrasing ===")
-                print(f"Error type: {type(e).__name__}")
-                print(f"Error message: {str(e)}")
-                return formatted_results  # Return original format if rephrasing fails
+        if not tool_result:
+            return "No events found in the database"
         
-        return "No events found in the database"
+        # Format the results
+        formatted_results = format_events(
+            tool_result, 
+            requested_type,
+            requested_year
+        )
+        
+        if formatted_results == "No events found in the database":
+            return formatted_results
+        
+        # Use LLM to rephrase the news while keeping the same meaning
+        try:
+            print("\n=== Starting LLM Rephrasing Process ===")
+            rephrased_text = await process_with_llm(formatted_results)
+            print("\n=== LLM Rephrasing Completed Successfully ===")
+            print(f"Final output:\n{rephrased_text}")
+            return rephrased_text
+            
+        except Exception as e:
+            print(f"\n=== Error in LLM Rephrasing ===")
+            print(f"Error type: {type(e).__name__}")
+            print(f"Error message: {str(e)}")
+            return formatted_results  # Return original format if rephrasing fails
         
     except Exception as e:
         print(f"Error in agent_chat: {str(e)}")
