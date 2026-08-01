@@ -1,116 +1,70 @@
+"""
+Fastest possible version: builds the semantic index using ONLY the
+descriptions already stored in SQLite (no web scraping, no network calls).
+
+This is instant even for tens of thousands of rows, and is enough to get
+semantic search working right now. You can layer in real scraped article
+text later (with build_vector_index_fast.py) to improve quality further --
+re-running it won't duplicate anything already indexed.
+
+Usage:
+    python build_vector_index_instant.py
+"""
 import os
 import sqlite3
-from vectorstore import VectorStore
-from agent.tools import extract_news_content  # reuse scraper
 from dotenv import load_dotenv
-from agent.tools import extract_news_content as async_extract_news_content
-import asyncio
+
+from vectorstore import VectorStore
 
 load_dotenv()
 
 SQLITE_DB_PATH = os.getenv('SQLITE_DB_PATH', os.path.join('data', 'gdelt.db'))
 
-# Synchronous scraper wrapper using requests + BeautifulSoup (fallback when async scraper isn't convenient)
-import requests
-from bs4 import BeautifulSoup
-import re
 
-def sync_extract_news_content(url: str) -> str:
-    try:
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200:
-            return ""
-        html = resp.text
-        soup = BeautifulSoup(html, 'html.parser')
-        for element in soup.find_all(['script', 'style', 'nav', 'header', 'footer', 'aside']):
-            element.decompose()
-        article = soup.find('article') or soup.find(class_=re.compile(r'article|content|story|main'))
-        if article:
-            text = article.get_text(separator=' ', strip=True)
-        else:
-            text = soup.body.get_text(separator=' ', strip=True) if soup.body else ""
-        text = re.sub(r'\s+', ' ', text)
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        summary = ' '.join(sentences[:3])
-        return summary.strip()
-    except Exception:
-        return ""
-
-
-def get_unindexed_events(conn, limit=None):
-    # Create tracking table if not exists
+def main():
+    conn = sqlite3.connect(SQLITE_DB_PATH)
     conn.execute("""
-    CREATE TABLE IF NOT EXISTS gdelt_vectors (
-        event_id INTEGER PRIMARY KEY
-    );
+        CREATE TABLE IF NOT EXISTS gdelt_vectors (
+            event_id INTEGER PRIMARY KEY
+        );
     """)
-    # Select events not in gdelt_vectors
-    q = """
-    SELECT id, EventDescription, SOURCEURL
-    FROM gdelt_events
-    WHERE id NOT IN (SELECT event_id FROM gdelt_vectors)
-    """
-    if limit:
-        q += f" LIMIT {int(limit)}"
-    cur = conn.execute(q)
-    return cur.fetchall()
-
-
-def mark_indexed(conn, event_ids):
-    conn.executemany("INSERT OR IGNORE INTO gdelt_vectors(event_id) VALUES (?)", [(int(i),) for i in event_ids])
     conn.commit()
 
+    rows = conn.execute("""
+        SELECT id, EventDescription, SOURCEURL
+        FROM gdelt_events
+        WHERE id NOT IN (SELECT event_id FROM gdelt_vectors)
+    """).fetchall()
 
-def main(batch_size=512):
-    conn = sqlite3.connect(SQLITE_DB_PATH)
+    print(f"Found {len(rows)} unindexed events. Embedding descriptions (no scraping)...")
+
+    if not rows:
+        print("Nothing new to index. Done.")
+        conn.close()
+        return
+
     vs = VectorStore()
-
-    rows = get_unindexed_events(conn)
     pairs = []
     metadata = {}
-    ids_to_mark = []
-
-    for row in rows:
-        event_id, fallback_desc, source_url = row
-        text = fallback_desc or ""
-        # Prefer scraped text if available (best-effort, may be slower)
-        scraped = ""
-        # Try async scraper first if available
-        try:
-            # call async scraper
-            scraped = asyncio.run(async_extract_news_content(source_url)) if source_url else ""
-        except Exception:
-            try:
-                scraped = sync_extract_news_content(source_url) if source_url else ""
-            except Exception:
-                scraped = ""
-
-        if scraped:
-            text = scraped
-        if not text or len(text) < 20:
-            # skip very short items
+    for event_id, description, source_url in rows:
+        text = description or ""
+        if len(text) < 10:
             continue
         pairs.append((event_id, text))
         metadata[event_id] = {"source_url": source_url}
-        ids_to_mark.append(event_id)
 
-        # Bulk add in batches
-        if len(pairs) >= batch_size:
-            vs.bulk_add(pairs, metadatas=metadata)
-            vs.save()
-            mark_indexed(conn, ids_to_mark)
-            pairs = []
-            metadata = {}
-            ids_to_mark = []
+    vs.bulk_add(pairs, metadatas=metadata)
+    vs.save()
 
-    # final batch
-    if pairs:
-        vs.bulk_add(pairs, metadatas=metadata)
-        vs.save()
-        mark_indexed(conn, ids_to_mark)
-
+    conn.executemany(
+        "INSERT OR IGNORE INTO gdelt_vectors(event_id) VALUES (?)",
+        [(int(r[0]),) for r in rows],
+    )
+    conn.commit()
     conn.close()
-    print("Vector index build complete.")
+
+    print(f"Done. Indexed {len(pairs)} events (skipped {len(rows) - len(pairs)} with empty/too-short text).")
+    print("You can improve quality later by running build_vector_index_fast.py to layer in real scraped article text.")
 
 
 if __name__ == "__main__":
